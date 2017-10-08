@@ -134,7 +134,7 @@ class EFIgyCli(object):
     def __make_api_get(self, api_path):
         """
         Wrapper to make an API GET request, return the response and handle errors
-        :return: 
+        :return:
         """
         try:
             self.last_response = urllib2.urlopen(self.api_server+api_path, cafile=self.cacert_path)
@@ -231,32 +231,72 @@ class EFIgyCli(object):
             self.message("\tAPI Version: %s\n\tUpdated On: %s\n\n" % (api_version["version"], api_version["updated"]))
 
             ##Get the local system data to send to API to find out relevant EFI firmware info
-            submit_data = self.gather_system_versions()
-            if not submit_data:
+            bulk_data = self.gather_system_versions_from_file('')
+
+            for data in bulk_data:
+                submit_data = self.gather_system_versions_from_bulk(data)
+                #submit_data = self.gather_system_versions()
+                if not submit_data:
+                    self.cleanup()
+                    return
+
+                ##Send the datas to the API
+                #self.results = self.submit_system_data()
+
+                ##Is this a model of mac that is getting EFI updates?
+                if self.check_fw_being_updated():
+                    ##If yes Are you running a Mac model that hasn't seen any FW update?
+                    ##Is your firmware patched to the expected level given your OS
+                    self.check_fw_versions()
+
+                ##Are running the latest build number?
+                #self.check_highest_build()
+
+                ##Are you running an out of date OS minor version?
+                #self.check_os_up_to_date()
+
+                ##Clean up
                 self.cleanup()
-                return
-
-            ##Send the datas to the API
-            self.results = self.submit_system_data()
-
-            ##Is this a model of mac that is getting EFI updates?
-            if self.check_fw_being_updated():
-                ##If yes Are you running a Mac model that hasn't seen any FW update?
-                ##Is your firmware patched to the expected level given your OS
-                self.check_fw_versions()
-
-            ##Are running the latest build number?
-            self.check_highest_build()
-
-            ##Are you running an out of date OS minor version?
-            self.check_os_up_to_date()
-
-            ##Clean up
-            self.cleanup()
 
         except EFIgyCliError, err:
              sys.stderr.write("%s"%(err))
 
+    def gather_system_versions_from_bulk(self, data):
+        """
+        Get versions of EFI, Boot ROM, OS & Mac Device as well as the SysUUID
+        :return:
+        """
+        self.message("Enumerated system informaton (This data will be sent to the API in order to determine your correct EFI version): ")
+
+        ##Get  Mac model ID, EFI & SMC ROM versions
+        self.hw_version  = data['hw_ver']
+        self.rom_version = data['rom_ver']
+        self.smc_version = data['smc_ver']
+
+        ##We like the uniqueness of the platforms UUID but we want to preserve privacy - hash it with salt to pseudonymize
+        self.h_sys_uuid  = ''
+
+        ##Get the Board-ID, this is how EFI files are matched to running hardware - Nastee
+        self.board_id = ''
+
+        ## Get OS version
+        self.os_version = data['os_ver']
+
+        ## Get build number
+        self.build_num  = data['build_num']
+
+        ## Carve out the major version as we use this a bunch
+        self.os_maj_ver = ".".join(self.os_version.split(".")[:2])
+        '''
+        self.message("\tHashed SysUUID   : %s" % (self.h_sys_uuid))
+        self.message("\tHardware Version : %s" % (self.hw_version))
+        self.message("\tBoot ROM Version : %s" % (self.rom_version))
+        self.message("\tSMC Version      : %s" % (self.smc_version))
+        self.message("\tBoard-ID         : %s" % (self.board_id))
+        self.message("\tOS Version       : %s" % (self.os_version))
+        self.message("\tBuild Number     : %s" % (self.build_num))
+        '''
+        return True
 
     def gather_system_versions(self):
         """
@@ -303,6 +343,20 @@ class EFIgyCli(object):
                 return False
 
         return True
+
+    def gather_system_versions_from_file(self, dataset):
+        """
+        Bulk imports a list of system version information to submit to the API
+        """
+        with open(dataset) as d:
+            bulk_system_info = d.read().splitlines()
+
+        output = []
+        for line in bulk_system_info:
+            data = line.split(',')
+            output.append(dict(hw_ver=str(data[0] + ',' + data[1]), rom_ver=data[2], smc_ver=data[3], os_ver=data[4], build_num=data[5]))
+
+        return output
 
 
     def submit_system_data(self):
@@ -388,6 +442,7 @@ class EFIgyCli(object):
         :return:
         """
         if not self.results.get("latest_efi_version"):
+
             ##Call the API to see what the latest version of EFI you are expected to be running given OS ver and mac model
             self.results["latest_efi_version"] = self.__make_api_get('/apple/latest_efi_firmware/%s/%s' % (self.hw_version, self.build_num))
 
